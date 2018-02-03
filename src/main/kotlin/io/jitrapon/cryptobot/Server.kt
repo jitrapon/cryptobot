@@ -51,6 +51,11 @@ class Server : AbstractVerticle() {
         /* amount in percentage gained after transaction fee has been deducted */
         private val TRANSACTION_FEE_MULTIPLIER = BigDecimal(0.9975)
 
+        /*
+         * SUBJECT TO CHANGE time it takes until next fetch
+         */
+        private val FETCH_INTERVAL = Duration.ofMinutes(3)
+
         /* SUBJECT TO CHANGE time after which it is possible to send a sell order if the sell percentage meets,
          * this is also the time interval when currentRate, lastRate (in sell mode), and lastRateSaveTime are updated.
           * Usually, it is safer to set this time interval to be less than the BUY_TIME_INTERVAL */
@@ -77,6 +82,7 @@ class Server : AbstractVerticle() {
                 .setDefaultPort(443)
                 .setDefaultHost(HOST)
                 .setTrustAll(true)
+                .setKeepAlive(false)
         client = WebClient.create(vertx, clientOptions)
 
         // start trading
@@ -128,7 +134,7 @@ class Server : AbstractVerticle() {
                 else {
                     val id = it.id
                     fetchTrade(id)
-                    vertx.setPeriodic(SELL_TIME_INTERVAL.toMillis(), {
+                    vertx.setPeriodic(FETCH_INTERVAL.toMillis(), {
                         fetchTrade(id)
                     })
                 }
@@ -192,23 +198,23 @@ class Server : AbstractVerticle() {
                     if (elapsedTime >= BUY_TIME_INTERVAL) {
 
                         // adjust lastPrice to be current price if percentDiff does not exceed buy percentage
-                        if (percentDiff >= MIN_BUY_PERCENT) {
-                            logger.info("New rate is $currentRate ($percentDiff% change). Rising above minimum threshold of $MIN_BUY_PERCENT")
-                            createOrder(true, primaryBalance, currentRate!!) {
-                                logger.info("SELL MODE ACTIVATED")
+                        when {
+                            percentDiff >= MIN_BUY_PERCENT -> {
+                                logger.info("New rate is $currentRate ($percentDiff% change). Rising above minimum threshold of $MIN_BUY_PERCENT")
+                                createOrder(true, primaryBalance, currentRate!!) {
+                                    logger.info("SELL MODE ACTIVATED")
+                                    lastRateSaveTime = LocalDateTime.now()
+                                    lastRate = currentRate
+                                    isInBuyMode = false
+                                }
+                            }
+                            currentRate!! < it -> {
+                                logger.info("Last rate was $lastRate, ${elapsedTime?.seconds} seconds ago. " +
+                                        "Rate is now $currentRate ($percentDiff%), updating last rate")
                                 lastRateSaveTime = LocalDateTime.now()
                                 lastRate = currentRate
-                                isInBuyMode = false
                             }
-                        }
-                        else if (currentRate!! < it) {
-                            logger.info("Last rate was $lastRate, ${elapsedTime?.seconds} seconds ago. " +
-                                    "Rate is now $currentRate ($percentDiff%), updating last rate")
-                            lastRateSaveTime = LocalDateTime.now()
-                            lastRate = currentRate
-                        }
-                        else {
-                            logger.info("Last rate was $lastRate, ${elapsedTime?.seconds} seconds ago. " +
+                            else -> logger.info("Last rate was $lastRate, ${elapsedTime?.seconds} seconds ago. " +
                                     "Rate is now $currentRate ($percentDiff%)")
                         }
                     }
