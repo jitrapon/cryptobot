@@ -5,7 +5,7 @@
         </encoder>
     </appender>
 
-    <logger name="io.jitrapon" level="DEBUG">
+    <logger name="io.jitrapon" level="INFO">
         <appender-ref ref="STDOUT"/>
     </logger>
     <logger name="io.netty" level="WARN" >

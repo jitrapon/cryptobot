@@ -229,7 +229,7 @@ class Server : AbstractVerticle() {
                 // lastRate and currentRate exceeds minBuyPercentage
                 if (isInBuyMode) {
                     if (elapsedTime >= BUY_TIME_INTERVAL) {
-                        logger.info("Elapsed time since rate updated exceeds BUY_TIME_INTERVAL ($elapsedTime >= $BUY_TIME_INTERVAL)")
+                        logger.info("Elapsed time exceeds BUY_TIME_INTERVAL")
 
                         // adjust lastPrice to be current price if percentDiff does not exceed buy percentage
                         when {
@@ -249,11 +249,10 @@ class Server : AbstractVerticle() {
                             }
                             currentRate!! < it -> {
                                 logger.info("CRITERIA currentRate < lastRate met. Updating lastRate to be $currentRate...")
+                                logRateChange(now, percentDiff)
 
                                 lastRateSaveTime = now
                                 lastRate = currentRate
-
-                                logRateChange(now, BigDecimal(0))
                             }
                             else -> {
                                 logger.info("Rate has risen but has not reached MIN_BUY_PERCENT of $MIN_BUY_PERCENT yet")
@@ -272,11 +271,10 @@ class Server : AbstractVerticle() {
                         // and update the new price
                         if (currentRate!! > it) {
                             logger.info("CRITERIA currentRate > lastRate met. Holding...")
+                            logRateChange(now, percentDiff)
 
                             lastRateSaveTime = now
                             lastRate = currentRate
-
-                            logRateChange(now, percentDiff)
                         }
 
                         // however, if the percentDiff is negative, and it is lower than
