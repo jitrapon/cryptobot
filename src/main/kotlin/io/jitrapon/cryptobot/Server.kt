@@ -1,12 +1,15 @@
 package io.jitrapon.cryptobot
 
+import ch.qos.logback.classic.LoggerContext
+import ch.qos.logback.core.util.StatusPrinter
 import io.vertx.core.AbstractVerticle
 import io.vertx.core.Future
 import io.vertx.core.json.JsonArray
 import io.vertx.core.json.JsonObject
-import io.vertx.core.logging.LoggerFactory
 import io.vertx.ext.web.client.WebClient
 import io.vertx.ext.web.client.WebClientOptions
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.Duration
@@ -15,7 +18,9 @@ import java.util.*
 
 class Server : AbstractVerticle() {
 
-    private var logger = LoggerFactory.getLogger(this.javaClass)
+    private lateinit var logger: Logger
+
+    /* http client */
     private lateinit var client: WebClient
 
     /* all the currency pairs available for trade */
@@ -73,7 +78,30 @@ class Server : AbstractVerticle() {
         private val MIN_SELL_PERCENT = BigDecimal(-1.5) //FIXME change to -1.5%
     }
 
+    private fun initializeLogging() {
+        // assume SLF4J is bound to logback in the current environment
+        val lc = LoggerFactory.getILoggerFactory() as LoggerContext
+        // print logback's internal status
+        StatusPrinter.print(lc)
+        logger = LoggerFactory.getLogger(this.javaClass)
+    }
+
+    private fun logState() {
+        logger.info("mode=${if (isInBuyMode) "BUY" else "SELL"}, " +
+                "primaryBalance=$primaryBalance $primaryCurrency, secondaryBalance=$secondaryBalance $secondaryCurrency")
+    }
+
+    private fun logRateChange(currentTime: LocalDateTime, percentDiff: BigDecimal) {
+        logger.info("percentChange=$percentDiff lastRate=$lastRate, lastRateSaveTime=$lastRateSaveTime, currentRate=$currentRate, currentTime=$currentTime")
+    }
+
+    private fun logError(throwable: Throwable) {
+        logger.error(throwable.message)
+    }
+
     override fun start(future: Future<Void>) {
+        initializeLogging()
+
         isInBuyMode = true
 
         // initialize httpclient
@@ -115,13 +143,13 @@ class Server : AbstractVerticle() {
                         logger.info("Found ${currencyPairs.size} currency pairs")
                         onComplete()
                     }
-                    else {
-                        logger.error("Something went wrong ${it.cause().message}")
-                    }
+                    else logError(it.cause())
                 }
     }
 
     private fun trade(primary: String, secondary: String) {
+        logger.info("Begin trading $primary - $secondary")
+
         primaryCurrency = primary
         secondaryCurrency = secondary
         val currencyPair: String = primaryCurrency + secondaryCurrency
@@ -143,9 +171,15 @@ class Server : AbstractVerticle() {
     }
 
     private fun fetchTrade(id: String?) {
+        val fetchTime = LocalDateTime.now()
+        logger.debug("Fetching recent trades --->")
+
         id ?: return
         client.getAbs("$HOST/trade/?pairing=$id")
                 .send {
+                    val responseTime = Duration.between(fetchTime, LocalDateTime.now())
+                    logger.debug("<--- [${it.result()?.statusCode()}] Receiving trade data, request took ${responseTime.toMillis()} ms")
+
                     if (it.succeeded()) {
                         try {
                             it.result()?.let {
@@ -168,12 +202,10 @@ class Server : AbstractVerticle() {
                             }
                         }
                         catch (ex: Exception) {
-                            logger.error("Something went wrong", ex)
+                            logError(ex)
                         }
                     }
-                    else {
-                        logger.error("Something went wrong", it)
-                    }
+                    else logError(it.cause())
                 }
     }
 
@@ -187,35 +219,46 @@ class Server : AbstractVerticle() {
      */
     private fun processTrade(trade: Trade) {
         currentRate = trade.rate
+        val now = LocalDateTime.now()
         if (lastRate != currentRate) {
             lastRate?.let {
-                val elapsedTime = Duration.between(lastRateSaveTime, LocalDateTime.now())
+                val elapsedTime = Duration.between(lastRateSaveTime, now)
                 val percentDiff = ((currentRate!! - it) / it) * BigDecimal(100)
 
                 // if in buy mode, if BUY_TIME_INTERVAL has passed, check if the percentage difference between
                 // lastRate and currentRate exceeds minBuyPercentage
                 if (isInBuyMode) {
                     if (elapsedTime >= BUY_TIME_INTERVAL) {
+                        logger.info("Elapsed time since rate updated exceeds BUY_TIME_INTERVAL ($elapsedTime >= $BUY_TIME_INTERVAL)")
 
                         // adjust lastPrice to be current price if percentDiff does not exceed buy percentage
                         when {
                             percentDiff >= MIN_BUY_PERCENT -> {
-                                logger.info("New rate is $currentRate ($percentDiff% change). Rising above minimum threshold of $MIN_BUY_PERCENT")
+                                logger.info("BUY CRITERIA percentDiff >= MIN_BUY_PERCENT SATISFIED! ($percentDiff >= $MIN_BUY_PERCENT)")
+                                logRateChange(now, percentDiff)
+
+                                // create buy order
                                 createOrder(true, primaryBalance, currentRate!!) {
-                                    logger.info("SELL MODE ACTIVATED")
                                     lastRateSaveTime = LocalDateTime.now()
                                     lastRate = currentRate
                                     isInBuyMode = false
+
+                                    logState()
+                                    logRateChange(LocalDateTime.now(), BigDecimal(0))
                                 }
                             }
                             currentRate!! < it -> {
-                                logger.info("Last rate was $lastRate, ${elapsedTime?.seconds} seconds ago. " +
-                                        "Rate is now $currentRate ($percentDiff%), updating last rate")
-                                lastRateSaveTime = LocalDateTime.now()
+                                logger.info("CRITERIA currentRate < lastRate met. Updating lastRate to be $currentRate...")
+
+                                lastRateSaveTime = now
                                 lastRate = currentRate
+
+                                logRateChange(now, BigDecimal(0))
                             }
-                            else -> logger.info("Last rate was $lastRate, ${elapsedTime?.seconds} seconds ago. " +
-                                    "Rate is now $currentRate ($percentDiff%)")
+                            else -> {
+                                logger.info("Rate has risen but has not reached MIN_BUY_PERCENT of $MIN_BUY_PERCENT yet")
+                                logRateChange(now, percentDiff)
+                            }
                         }
                     }
                 }
@@ -228,20 +271,28 @@ class Server : AbstractVerticle() {
                         // if the new price is higher than our last price bought, we hold
                         // and update the new price
                         if (currentRate!! > it) {
-                            logger.info("Found higher rate ($currentRate) than last rate ($it), holding...")
-                            lastRateSaveTime = LocalDateTime.now()
+                            logger.info("CRITERIA currentRate > lastRate met. Holding...")
+
+                            lastRateSaveTime = now
                             lastRate = currentRate
+
+                            logRateChange(now, percentDiff)
                         }
 
                         // however, if the percentDiff is negative, and it is lower than
                         // MIN SELL PERCENTAGE, start selling
                         else if (percentDiff < MIN_SELL_PERCENT) {
-                            logger.info("Dropping below minimum threshold of $MIN_SELL_PERCENT")
+                            logger.info("SELL CRITERIA percentDiff < MIN_SELL_PERCENT SATISFIED! ($percentDiff < $MIN_SELL_PERCENT)")
+                            logRateChange(now, percentDiff)
+
+                            // create sell order
                             createOrder(false, secondaryBalance, currentRate!!) {
-                                logger.info("BUY MODE ACTIVATED")
                                 lastRateSaveTime = LocalDateTime.now()
                                 lastRate = currentRate
                                 isInBuyMode = true
+
+                                logState()
+                                logRateChange(LocalDateTime.now(), BigDecimal(0))
                             }
                         }
                     }
@@ -252,8 +303,10 @@ class Server : AbstractVerticle() {
             // last rate is first initialized
             if (lastRate == null) {
                 lastRate = currentRate
-                lastRateSaveTime = LocalDateTime.now()
-                logger.info("Current rate is $currentRate. Time is now $lastRateSaveTime. Mode is BUY? $isInBuyMode")
+                lastRateSaveTime = now
+
+                logState()
+                logRateChange(now, BigDecimal(0))
             }
         }
     }
@@ -265,14 +318,12 @@ class Server : AbstractVerticle() {
             // perform transaction...
             primaryBalance -= roundedAmount
             secondaryBalance += (roundedAmount * TRANSACTION_FEE_MULTIPLIER / rate).setScale(8, RoundingMode.HALF_UP)
-            logger.info("Balance is now $primaryBalance $primaryCurrency / $secondaryBalance $secondaryCurrency")
         }
         else {
             logger.info("Selling amount of $roundedAmount $secondaryCurrency at rate $rate")
             // perform transaction...
             secondaryBalance -= roundedAmount
             primaryBalance += (roundedAmount * TRANSACTION_FEE_MULTIPLIER * rate).setScale(8, RoundingMode.HALF_UP)
-            logger.info("Balance is now $primaryBalance $primaryCurrency / $secondaryBalance $secondaryCurrency")
         }
         onComplete()
     }

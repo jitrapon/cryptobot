@@ -1,0 +1,15 @@
+<configuration scan="true" scanPeriod="30 seconds">
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender" level="INFO">
+        <encoder>
+            <pattern>%date{ISO8601} %-5level [%logger{36}] %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="io.jitrapon" level="DEBUG">
+        <appender-ref ref="STDOUT"/>
+    </logger>
+    <logger name="io.netty" level="WARN" >
+        <appender-ref ref="STDOUT"/>
+    </logger>
+    <root level="DEBUG" />
+</configuration>
