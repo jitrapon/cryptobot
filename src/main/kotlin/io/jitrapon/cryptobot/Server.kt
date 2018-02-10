@@ -36,7 +36,7 @@ class Server : AbstractVerticle() {
     private var lastRateSaveTime: LocalDateTime? = null
 
     /* amount of unit of primary currency */
-    private var primaryBalance = BigDecimal(1000.00000000)
+    private var primaryBalance = BigDecimal(40000.00000000)
 
     /* amount of unit of secondary currency */
     private var secondaryBalance = BigDecimal(0.00000000)
